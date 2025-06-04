@@ -30,8 +30,12 @@ def enhance_radar_image(image):
 
 # === STEP 2: Object Detection with Filtering ===
 def detect_objects(enhanced_img):
-    """Detects meaningful blobs only — filters out noise"""
+    """Detect valid objects, including cars — filters noise"""
     _, binary = cv2.threshold(enhanced_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Optional: suppress sky/tree zone
+    binary[:100, :] = 0  # block top 100px
+
     labeled = label(binary)
     bboxes = []
 
@@ -42,11 +46,12 @@ def detect_objects(enhanced_img):
         width = maxc - minc
         aspect_ratio = width / height if height != 0 else 0
 
-        # ✅ Stricter conditions to reduce false positives:
-        if 150 <= area <= 7000 and 0.3 <= aspect_ratio <= 3.5:
+        # ✅ Final Rule: Keep cars, filter small junk
+        if 150 <= area <= 7000 and 0.3 <= aspect_ratio <= 4.0:
             bboxes.append((minr, minc, maxr, maxc))
 
     return bboxes, binary
+
 
 # === STEP 3: Full Pipeline Execution ===
 def run_pipeline():
