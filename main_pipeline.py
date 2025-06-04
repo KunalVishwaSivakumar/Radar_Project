@@ -10,31 +10,45 @@ from skimage.measure import label, regionprops
 root_dir = "radar_project"
 input_folder = os.path.join(root_dir, "radar_dataset")
 enhanced_folder = os.path.join(root_dir, "enhanced_outputs")
-detection_folder = os.path.join(root_dir, "detections")
+detection_folder = os.path.join(root_dir, "detection")
 
-# Create necessary folders
 os.makedirs(input_folder, exist_ok=True)
 os.makedirs(enhanced_folder, exist_ok=True)
 os.makedirs(detection_folder, exist_ok=True)
 
-# === PIPELINE FUNCTIONS ===
+# === STEP 1: Image Enhancement ===
 def enhance_radar_image(image):
-    """Apply TV denoising, CLAHE, and upscaling"""
-    tv_img = denoise_tv_chambolle(image / 255.0, weight=0.1)
+    """TV denoising + CLAHE + upscaling"""
+    tv_img = denoise_tv_chambolle(image / 255.0, weight=0.03)
     tv_img = (tv_img * 255).astype(np.uint8)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    clahe_img = clahe.apply(tv_img)
-    upscaled_img = cv2.resize(clahe_img, (image.shape[1]*2, image.shape[0]*2), interpolation=cv2.INTER_LANCZOS4)
-    return upscaled_img
 
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+    clahe_img = clahe.apply(tv_img)
+
+    upscaled = cv2.resize(clahe_img, (image.shape[1]*2, image.shape[0]*2), interpolation=cv2.INTER_LANCZOS4)
+    return upscaled
+
+# === STEP 2: Object Detection with Filtering ===
 def detect_objects(enhanced_img):
-    """Detect blobs using Otsu threshold and connected components"""
+    """Detects meaningful blobs only — filters out noise"""
     _, binary = cv2.threshold(enhanced_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     labeled = label(binary)
-    bboxes = [region.bbox for region in regionprops(labeled) if region.area >= 20]
+    bboxes = []
+
+    for region in regionprops(labeled):
+        minr, minc, maxr, maxc = region.bbox
+        area = region.area
+        height = maxr - minr
+        width = maxc - minc
+        aspect_ratio = width / height if height != 0 else 0
+
+        # ✅ Stricter conditions to reduce false positives:
+        if 150 <= area <= 7000 and 0.3 <= aspect_ratio <= 3.5:
+            bboxes.append((minr, minc, maxr, maxc))
+
     return bboxes, binary
 
-# === MAIN PIPELINE ===
+# === STEP 3: Full Pipeline Execution ===
 def run_pipeline():
     image_files = sorted([f for f in os.listdir(input_folder) if f.lower().endswith((".png", ".jpg", ".jpeg"))])
 
@@ -48,36 +62,34 @@ def run_pipeline():
             print(f"Skipped unreadable image: {filename}")
             continue
 
-        # --- Enhancement ---
+        # Step 1: Enhance
         enhanced = enhance_radar_image(orig)
-        enhanced_path = os.path.join(enhanced_folder, f"enh_{filename}")
-        cv2.imwrite(enhanced_path, enhanced)
+        cv2.imwrite(os.path.join(enhanced_folder, f"enh_{filename}"), enhanced)
 
-        # --- SSIM ---
+        # Step 2: SSIM
         resized_orig = cv2.resize(orig, (enhanced.shape[1], enhanced.shape[0]))
         ssim_score = ssim(resized_orig, enhanced)
 
-        # --- Detection ---
+        # Step 3: Detect
         boxes, _ = detect_objects(enhanced)
         detection_counts.append(len(boxes))
         ssim_scores.append(ssim_score)
 
-        # --- Draw and save detections ---
+        # Step 4: Save output
         output = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
-        for box in boxes:
-            minr, minc, maxr, maxc = box
+        for minr, minc, maxr, maxc in boxes:
             cv2.rectangle(output, (minc, minr), (maxc, maxr), (0, 0, 255), 2)
         cv2.imwrite(os.path.join(detection_folder, f"detect_{filename}"), output)
 
-    # --- Save results ---
+    # Step 5: Save results
     df = pd.DataFrame({
         "Image Name": image_files,
         "SSIM (Original vs Enhanced)": ssim_scores,
         "Detected Objects": detection_counts
     })
     df.to_csv(os.path.join(root_dir, "results.csv"), index=False)
-    print(df)
+    print("✅ DONE! Cleaned detections + results.csv saved")
 
-# Run it
+# Run script
 if __name__ == "__main__":
     run_pipeline()
